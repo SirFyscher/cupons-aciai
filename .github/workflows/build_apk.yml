@@ -26,11 +26,13 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Obter Dependências
-        run: flutter pub get
+      - name: Obter Dependências e Preparar Android
+        run: |
+          flutter create . --platforms=android --org=br.com.aciai
+          flutter pub get
 
       - name: Compilar APK (Release)
-        run: flutter build apk --split-per-abi --release || flutter build apk --release
+        run: flutter build apk --release
 
       - name: Disponibilizar APK para Download
         uses: actions/upload-artifact@v4
