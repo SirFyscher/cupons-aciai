@@ -49,7 +49,7 @@ class AppTheme {
         ),
         iconTheme: IconThemeData(color: textPrimary),
       ),
-      cardTheme: CardTheme(
+      cardTheme: CardThemeData(
         color: surfaceWhite,
         elevation: 0,
         shape: RoundedRectangleBorder(

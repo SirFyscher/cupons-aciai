@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/utils/coupon_parser.dart';
 import '../../services/validation_service.dart';
 import '../../services/auth_service.dart';
 import 'validation_result_dialog.dart';
@@ -21,14 +23,76 @@ class ScannerScreen extends StatefulWidget {
 class _ScannerScreenState extends State<ScannerScreen> {
   final _manualKeyController = TextEditingController();
   final _manualValueController = TextEditingController();
+  final MobileScannerController _cameraController = MobileScannerController(
+    detectionSpeed: DetectionSpeed.noDuplicates,
+    formats: const [BarcodeFormat.qrCode, BarcodeFormat.code128],
+  );
+
   bool _isManualInput = false;
   bool _isProcessing = false;
+  bool _torchEnabled = false;
 
   @override
   void dispose() {
+    _cameraController.dispose();
     _manualKeyController.dispose();
     _manualValueController.dispose();
     super.dispose();
+  }
+
+  Future<double?> _promptForValueIfMissing(ParsedCouponData parsed) async {
+    if (parsed.value != null && parsed.value! > 0) {
+      return parsed.value;
+    }
+
+    final controller = TextEditingController();
+    return showDialog<double>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text(
+            'Confirmar Valor da Nota',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Chave identificada com sucesso!\nCNPJ Emissor: ${parsed.formattedCnpj}',
+                style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(
+                  labelText: 'Valor Total da Compra (R\$)',
+                  hintText: 'Ex: 75,90',
+                  prefixIcon: Icon(Icons.attach_money_rounded),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(null),
+              child: const Text('Cancelar'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                final val = double.tryParse(controller.text.replaceAll(',', '.'));
+                Navigator.of(ctx).pop(val);
+              },
+              child: const Text('Validar'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   Future<void> _processCoupon(String rawText, {double? manualValue}) async {
@@ -44,10 +108,21 @@ class _ScannerScreenState extends State<ScannerScreen> {
       return;
     }
 
+    // Verifica se o QR code possui valor embutido ou se precisa confirmar
+    double? finalManualValue = manualValue;
+    final parsed = CouponParser.parse(rawText);
+    if (parsed != null && finalManualValue == null && parsed.value == null) {
+      finalManualValue = await _promptForValueIfMissing(parsed);
+      if (finalManualValue == null) {
+        setState(() => _isProcessing = false);
+        return;
+      }
+    }
+
     final result = await widget.validationService.validateAndRegister(
       rawInput: rawText,
       userId: user.id,
-      manualValue: manualValue,
+      manualValue: finalManualValue,
     );
 
     setState(() => _isProcessing = false);
@@ -85,22 +160,25 @@ class _ScannerScreenState extends State<ScannerScreen> {
   void _simulateScenario(String type) {
     switch (type) {
       case 'aprovado_150':
-        // Supermercado Central (CNPJ 12345678000190), R$ 150.00 -> 3 números da sorte
-        final randomSuffix = (10000000 + DateTime.now().millisecondsSinceEpoch % 90000000).toString();
-        final key = '3526101234567800019065001000$randomSuffix';
+        final randomSuffix = (10000000000000 + DateTime.now().millisecondsSinceEpoch % 89999999999999)
+            .toString()
+            .padLeft(14, '0')
+            .substring(0, 14);
+        final key = '352610123456780001906500100001$randomSuffix';
         _processCoupon('https://www.fazenda.sp.gov.br/nfce/qrcode?p=$key|2|1|1|150.00');
         break;
 
       case 'valor_baixo':
-        // R$ 35.00 -> Deve rejeitar (< R$ 50)
-        final randomSuffix = (10000000 + DateTime.now().millisecondsSinceEpoch % 90000000).toString();
-        final key = '3526101234567800019065001000$randomSuffix';
+        final randomSuffix = (10000000000000 + DateTime.now().millisecondsSinceEpoch % 89999999999999)
+            .toString()
+            .padLeft(14, '0')
+            .substring(0, 14);
+        final key = '352610123456780001906500100001$randomSuffix';
         _processCoupon('https://www.fazenda.sp.gov.br/nfce/qrcode?p=$key|2|1|1|35.00', manualValue: 35.00);
         break;
 
       case 'loja_nao_participante':
-        // CNPJ aleatório não associado à ACIAI
-        final key = '35261099999999000199650010001234567890123456';
+        const key = '35261099999999000199650010001234567890123456';
         _processCoupon('https://www.fazenda.sp.gov.br/nfce/qrcode?p=$key|2|1|1|180.00');
         break;
     }
@@ -112,6 +190,18 @@ class _ScannerScreenState extends State<ScannerScreen> {
       appBar: AppBar(
         title: const Text('Validar Cupom Fiscal'),
         actions: [
+          if (!_isManualInput)
+            IconButton(
+              tooltip: 'Lanterna',
+              icon: Icon(
+                _torchEnabled ? Icons.flash_on_rounded : Icons.flash_off_rounded,
+                color: _torchEnabled ? AppTheme.primaryGreen : AppTheme.textPrimary,
+              ),
+              onPressed: () {
+                _cameraController.toggleTorch();
+                setState(() => _torchEnabled = !_torchEnabled);
+              },
+            ),
           IconButton(
             tooltip: _isManualInput ? 'Usar Câmera' : 'Digitar Chave',
             icon: Icon(_isManualInput ? Icons.qr_code_scanner : Icons.keyboard_alt_outlined),
@@ -125,62 +215,65 @@ class _ScannerScreenState extends State<ScannerScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Alternância entre Visor da Câmera e Digitação Manual
               if (!_isManualInput) ...[
-                // Simulação do Visor de Câmera Minimalista
-                Container(
-                  height: 320,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF0F172A),
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: AppTheme.cardBorder),
-                  ),
-                  child: Stack(
-                    alignment: Alignment.center,
-                    children: [
-                      // Linhas de mira (Retículo de Leitura de QR Code)
-                      Container(
-                        width: 220,
-                        height: 220,
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: AppTheme.emeraldAccent.withOpacity(0.8), width: 2),
+                // Visor Real da Câmera com MobileScanner
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(20),
+                  child: Container(
+                    height: 320,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0F172A),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: AppTheme.cardBorder),
+                    ),
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        MobileScanner(
+                          controller: _cameraController,
+                          onDetect: (capture) {
+                            if (_isProcessing) return;
+                            final List<Barcode> barcodes = capture.barcodes;
+                            for (final barcode in barcodes) {
+                              final raw = barcode.rawValue;
+                              if (raw != null && raw.isNotEmpty) {
+                                _processCoupon(raw);
+                                break;
+                              }
+                            }
+                          },
                         ),
-                        child: Stack(
-                          children: [
-                            // 4 cantos estilizados em verde
-                            Positioned(top: 0, left: 0, child: _buildCorner(0, 0)),
-                            Positioned(top: 0, right: 0, child: _buildCorner(0, 1)),
-                            Positioned(bottom: 0, left: 0, child: _buildCorner(1, 0)),
-                            Positioned(bottom: 0, right: 0, child: _buildCorner(1, 1)),
-                            const Center(
-                              child: Icon(
-                                Icons.qr_code_2_rounded,
-                                size: 80,
-                                color: Colors.white24,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      Positioned(
-                        bottom: 20,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                        // Mira minimalista em verde sobre a câmera
+                        Container(
+                          width: 220,
+                          height: 220,
                           decoration: BoxDecoration(
-                            color: Colors.black.withOpacity(0.6),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: const Text(
-                            'Aponte para o QR Code do cupom fiscal',
-                            style: TextStyle(color: Colors.white, fontSize: 12),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(
+                              color: AppTheme.emeraldAccent.withAlpha(200),
+                              width: 2.5,
+                            ),
                           ),
                         ),
-                      ),
-                    ],
+                        Positioned(
+                          bottom: 16,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withAlpha(160),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: const Text(
+                              'Aponte a câmera para o QR Code da nota',
+                              style: TextStyle(color: Colors.white, fontSize: 12),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
                 Center(
                   child: TextButton.icon(
                     onPressed: () => setState(() => _isManualInput = true),
@@ -253,14 +346,14 @@ class _ScannerScreenState extends State<ScannerScreen> {
                 ),
               ],
 
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
               // Seção de Simulação e Teste de Cenários
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
                   color: AppTheme.greenBackgroundLight,
                   borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: AppTheme.primaryGreen.withOpacity(0.2)),
+                  border: Border.all(color: AppTheme.primaryGreen.withAlpha(50)),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -279,9 +372,9 @@ class _ScannerScreenState extends State<ScannerScreen> {
                         ),
                       ],
                     ),
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 8),
                     const Text(
-                      'Clique em um dos cenários abaixo para simular a leitura instantânea:',
+                      'Toque em um cenário abaixo para simular uma leitura:',
                       style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
                     ),
                     const SizedBox(height: 12),
@@ -311,22 +404,6 @@ class _ScannerScreenState extends State<ScannerScreen> {
               ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildCorner(int topOrBottom, int leftOrRight) {
-    return Container(
-      width: 24,
-      height: 24,
-      decoration: BoxDecoration(
-        color: AppTheme.emeraldAccent,
-        borderRadius: BorderRadius.only(
-          topLeft: topOrBottom == 0 && leftOrRight == 0 ? const Radius.circular(8) : Radius.zero,
-          topRight: topOrBottom == 0 && leftOrRight == 1 ? const Radius.circular(8) : Radius.zero,
-          bottomLeft: topOrBottom == 1 && leftOrRight == 0 ? const Radius.circular(8) : Radius.zero,
-          bottomRight: topOrBottom == 1 && leftOrRight == 1 ? const Radius.circular(8) : Radius.zero,
         ),
       ),
     );

@@ -21,8 +21,8 @@ class LuckyNumberBadge extends StatelessWidget {
       decoration: BoxDecoration(
         color: AppTheme.greenBackgroundLight,
         borderRadius: BorderRadius.circular(10),
-        border: Border.BorderSemantics(
-          child: Container(),
+        border: Border.all(
+          color: AppTheme.primaryGreen.withAlpha(60),
         ),
       ),
       child: Row(

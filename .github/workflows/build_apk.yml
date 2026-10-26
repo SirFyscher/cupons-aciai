@@ -26,9 +26,11 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Obter Dependências e Preparar Android
+      - name: Gerar Estrutura Android Nativa e Obter Dependências
         run: |
+          rm -rf android
           flutter create . --platforms=android --org=br.com.aciai
+          sed -i 's/<application/<uses-permission android:name="android.permission.CAMERA"\/>\n    <uses-permission android:name="android.permission.INTERNET"\/>\n    <application/' android/app/src/main/AndroidManifest.xml
           flutter pub get
 
       - name: Compilar APK (Release)
